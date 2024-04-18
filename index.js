@@ -4,7 +4,7 @@ import readline from "node:readline";
 import path from "node:path";
 
 // Utility functions
-function toFasta(location, reference, alternates) {
+function getReplacement(location, reference, alternates) {
     if (location === ".") return "N";
     return location === "0" ? reference : alternates[location - 1];
 }
@@ -51,7 +51,7 @@ const sampleFiles = sampleNames.map(n => path.join(tempDir, n));
 const sampleStreams = sampleFiles.map(f => fs.createWriteStream(f));
 
 // Define state
-let samplePositions = [];
+let minPosition = 0;
 let headers = null;
 let lineNumber = -1;
 let prevChromosome = "";
@@ -86,31 +86,42 @@ for await (const line of inputLines) {
         console.log("Entering chromosome", chromosome);
 
         // Reset position state
-        samplePositions = sampleNames.map(() => 0);
+        minPosition = 0;
         prevChromosome = chromosome;
     }
 
     const position = parseInt(namedColumns["POS"]);
+    if (position < minPosition) continue;
+
+    const reference = namedColumns["REF"];
+    const alternates = namedColumns["ALT"].split(',');
+    minPosition = position + reference.length;
+
+    const replacements = [];
+    let maxReplacementLength = 0;
+
     const samples = columns.slice(-sampleNames.length);
     for (let i = 0; i < samples.length; i++) {
-        // Skip already read positions
-        if (position < samplePositions[i]) continue;
-
         const sample = samples[i];
-        const stream = sampleStreams[i];
-
         const location = /^(\d+|\.)/.exec(sample)[0];
-        const reference = namedColumns["REF"];
-        const alternates = namedColumns["ALT"].split(',');
+        const replacement = getReplacement(location, reference, alternates);
+
+        if (replacement.length > maxReplacementLength)
+            maxReplacementLength = replacement.length;
+
+        replacements[i] = replacement;
+    }
+
+    for (let i = 0; i < samples.length; i++) {
+        const replacement = replacements[i];
+        const stream = sampleStreams[i];
 
         // Wait for output stream to drain
         await sampleStreamDrainedPromises[i];
-        if (!stream.write(toFasta(location, reference, alternates)))
+        if (!stream.write(replacement.padEnd(maxReplacementLength, "-")))
             sampleStreamDrainedPromises[i] = new Promise(res => {
                 stream.once('drain', res);
             });
-
-        samplePositions[i] = position + reference.length;
     }
 }
 
