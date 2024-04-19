@@ -27,11 +27,11 @@ async function mkdirForce(path) {
 // Parse and validate arguments
 const [
     nodePath, scriptPath,
-    vcfPath, studentEmail, ...sampleNames
+    inputPath, outputName, ...sampleNames
 ] = process.argv;
 
 if (process.argv.length < 5) {
-    console.log(`Usage: ${nodePath} ${scriptPath} VCF_FILE STUDENT_EMAIL [SAMPLE_NAMES...]`);
+    console.log(`Usage: ${nodePath} ${scriptPath} INPUT_PATH OUTPUT_NAME [SAMPLE_NAMES...]`);
     process.exit(1);
 }
 
@@ -39,15 +39,19 @@ if (process.argv.length < 5) {
 const tempDir = "temp";
 await mkdirForce(tempDir);
 
+// Create sample directory
+const sampleDir = path.join(tempDir, outputName);
+await mkdirForce(sampleDir);
+
 // Open input file
-const inputStream = fs.createReadStream(vcfPath);
+const inputStream = fs.createReadStream(inputPath);
 const inputLines = readline.createInterface({
     input: inputStream,
     crlfDelay: Infinity,
 });
 
 // Open temp files
-const sampleFiles = sampleNames.map(n => path.join(tempDir, n));
+const sampleFiles = sampleNames.map(n => path.join(sampleDir, n));
 const sampleStreams = sampleFiles.map(f => fs.createWriteStream(f));
 
 // Define state
@@ -135,8 +139,8 @@ const outputDir = "output";
 await mkdirForce(outputDir);
 
 // Open output file
-const outputPath = path.join(outputDir, studentEmail);
-const outputStream = fs.createWriteStream(outputPath);
+const outputFile = path.join(outputDir, outputName);
+const outputStream = fs.createWriteStream(outputFile);
 
 // Merge temporary files
 for (let i = 0; i < sampleNames.length; i++) {
@@ -156,5 +160,5 @@ await closeStream(outputStream);
 
 console.log("Deleting temporary files");
 
-// Delete temporary files
-await fsp.rm(tempDir, { recursive: true });
+// Delete individual sample files
+await fsp.rm(sampleDir, { recursive: true });
