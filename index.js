@@ -113,15 +113,12 @@ for await (const line of inputLines) {
     }
 
     for (let i = 0; i < samples.length; i++) {
+        const replacement = replacements[i];
         const stream = sampleStreams[i];
-        let replacement = replacements[i];
-
-        if (replacement.length < maxReplacementLength)
-            replacement += "-";
 
         // Wait for output stream to drain
         await sampleStreamDrainedPromises[i];
-        if (!stream.write(replacement))
+        if (!stream.write(replacement.padEnd(maxReplacementLength, "-")))
             sampleStreamDrainedPromises[i] = new Promise(res => {
                 stream.once('drain', res);
             });
