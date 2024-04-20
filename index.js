@@ -5,7 +5,7 @@ import path from "node:path";
 
 // Utility functions
 function getReplacement(location, reference, alternates) {
-    if (location === ".") return "N";
+    if (location === ".") return null;
     return location === "0" ? reference : alternates[location - 1];
 }
 
@@ -29,6 +29,7 @@ const [
     nodePath, scriptPath,
     inputPath, outputName, ...sampleNames
 ] = process.argv;
+const sampleCount = sampleNames.length;
 
 if (process.argv.length < 5) {
     console.log(`Usage: ${nodePath} ${scriptPath} INPUT_PATH OUTPUT_NAME [SAMPLE_NAMES...]`);
@@ -55,7 +56,8 @@ const sampleFiles = sampleNames.map(n => path.join(sampleDir, n));
 const sampleStreams = sampleFiles.map(f => fs.createWriteStream(f));
 
 // Define state
-let minPosition = 0;
+let window = [];
+let windowEnd = 0;
 let headers = null;
 let lineNumber = -1;
 let prevChromosome = "";
@@ -73,9 +75,9 @@ for await (const line of inputLines) {
     if (headers == null) {
         // Parse header
         const lastColumnIndex = columns.length - 1;
-        const sampleCount = lastColumnIndex - columns.indexOf("FORMAT");
-        if (sampleNames.length !== sampleCount)
-            throw new Error(`${sampleNames.length} samples expected but found ${sampleCount}.`);
+        const actualSampleCount = lastColumnIndex - columns.indexOf("FORMAT");
+        if (sampleCount !== actualSampleCount)
+            throw new Error(`${sampleNames.length} samples expected but found ${actualSampleCount}.`);
 
         headers = columns;
         continue;
@@ -90,42 +92,71 @@ for await (const line of inputLines) {
         console.log("Entering chromosome", chromosome);
 
         // Reset position state
-        minPosition = 0;
+        windowEnd = 0;
         prevChromosome = chromosome;
     }
 
     const position = parseInt(namedColumns["POS"]);
-    if (position < minPosition) continue;
+    if (position >= windowEnd) {
+        for (const replacements of window) {
+            let maxReplacementLength = 0;
+            for (let si = 0; si < sampleCount; si++) {
+                const {length} = replacements[si] ??= "N";
+                if (length > maxReplacementLength)
+                    maxReplacementLength = length;
+            }
 
-    const reference = namedColumns["REF"];
-    const alternates = namedColumns["ALT"].split(',');
-    minPosition = position + reference.length;
+            for (let si = 0; si < sampleCount; si++) {
+                const replacement = replacements[si].padEnd(maxReplacementLength, "-");
+                const stream = sampleStreams[si];
 
-    const replacements = [];
-    let maxReplacementLength = 0;
+                // Wait for output stream to drain
+                await sampleStreamDrainedPromises[si];
+                if (!stream.write(replacement))
+                    sampleStreamDrainedPromises[si] = new Promise(res => {
+                        stream.once('drain', res);
+                    });
+            }
+        }
 
-    const samples = columns.slice(-sampleNames.length);
-    for (let i = 0; i < samples.length; i++) {
-        const sample = samples[i];
-        const location = /^(\d+|\.)/.exec(sample)[0];
-        const replacement = getReplacement(location, reference, alternates);
-
-        if (replacement.length > maxReplacementLength)
-            maxReplacementLength = replacement.length;
-
-        replacements[i] = replacement;
+        window = [];
+        windowEnd = position;
     }
 
-    for (let i = 0; i < samples.length; i++) {
-        const replacement = replacements[i];
-        const stream = sampleStreams[i];
+    // Expand window to fit max referenced position
+    const reference = namedColumns["REF"];
+    const minWindowEnd = position + reference.length;
+    for (let pos = windowEnd; pos < minWindowEnd; pos++)
+        window.push(new Array(sampleCount));
 
-        // Wait for output stream to drain
-        await sampleStreamDrainedPromises[i];
-        if (!stream.write(replacement.padEnd(maxReplacementLength, "-")))
-            sampleStreamDrainedPromises[i] = new Promise(res => {
-                stream.once('drain', res);
-            });
+    // Update window end position
+    if (minWindowEnd > windowEnd)
+        windowEnd = minWindowEnd;
+
+    // Calculate position in window
+    const windowStart = windowEnd - window.length;
+    const windowPos = position - windowStart;
+
+    const alternates = namedColumns["ALT"].split(',');
+    const samples = columns.slice(-sampleCount);
+    for (let si = 0; si < sampleCount; si++) {
+        if (window[windowPos][si] != null) continue;
+
+        const sample = samples[si];
+        const location = /^(\d+|\.)/.exec(sample)[0];
+        const replacement = getReplacement(location, reference, alternates);
+        if (replacement == null) continue;
+
+        if (replacement.length >= reference.length) {
+            window[windowPos][si] = replacement;
+            continue;
+        }
+
+        for (let i = 0; i < replacement.length; i++)
+            window[windowPos + i][si] = replacement[i];
+
+        for (let i = replacement.length; i < reference.length; i++)
+            window[windowPos + i][si] = '-';
     }
 }
 
